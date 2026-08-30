@@ -1,0 +1,21 @@
+{
+  "name": "best-wand",
+  "version": "0.0.2",
+  "private": true,
+  "description": "최강의 지팡이 (best-wand) - 완드 체이닝 뱀서라이크",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@capacitor/android": "^8.5.0",
+    "@capacitor/cli": "^8.5.0",
+    "@capacitor/core": "^8.5.0",
+    "phaser": "^3.80.1"
+  },
+  "devDependencies": {
+    "vite": "^5.4.0"
+  }
+}

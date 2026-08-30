@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">best-wand</string>
+    <string name="title_activity_main">best-wand</string>
+    <string name="package_name">com.bestwand.app</string>
+    <string name="custom_url_scheme">com.bestwand.app</string>
+</resources>
