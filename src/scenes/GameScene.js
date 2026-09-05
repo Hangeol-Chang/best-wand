@@ -4,8 +4,13 @@ import { wandColor } from '../data/wands/colors.js';
 import { resolveWandChain, createBaseEffect } from '../systems/wandChain.js';
 import VirtualJoystick from '../systems/joystick.js';
 import { pickMobType } from '../data/mobs/index.js';
+import { recordRun } from '../state/runHistory.js';
 
 const PLAYER_SPEED = 220;
+const PLAYER_DISPLAY_SIZE = 48;
+const PLAYER_FRAME_SIZE = 418;
+// 3x3 캐릭터 시트: 위쪽 행 = S계열(가운데가 정면 S), 가운데 행 = W/E, 아래쪽 행 = N계열. 중앙(4)은 미사용.
+const DIR_FRAME = { SW: 0, S: 1, SE: 2, W: 3, E: 5, NW: 6, N: 7, NE: 8 };
 const TILE_SIZE = 192;
 const TILE_COLOR_A = 0x1a1d24;
 const TILE_COLOR_B = 0x21242c;
@@ -27,6 +32,11 @@ const ORBIT_LAUNCH_SPEED = 260;
 const METEOR_FALL_MS = 700;
 const METEOR_SCATTER = 40;
 const METEOR_COLOR = 0xff8800;
+const LIGHTNING_RANGE = 420;
+const LIGHTNING_HIT_WIDTH = 14;
+const LIGHTNING_SEGMENTS = 5;
+const LIGHTNING_JITTER = 26;
+const LIGHTNING_COLOR = 0xffe066;
 const CHEST_SIZE = 20;
 const CHEST_COLOR = 0xffd700;
 
@@ -58,14 +68,18 @@ export default class GameScene extends Phaser.Scene {
   create() {
     this.hp = MAX_HP;
     this.score = 0;
+    this.kills = 0;
+    this.maxHit = 0;
     this.gameOver = false;
 
     this.createCheckerBackground();
     this.createParticleTexture();
 
-    this.player = this.add.rectangle(0, 0, 16, 32, 0x4fd1c5);
-    this.physics.add.existing(this.player);
-    this.player.body.setSize(16, 32);
+    this.player = this.physics.add.sprite(0, 0, 'character', DIR_FRAME.S);
+    const playerScale = PLAYER_DISPLAY_SIZE / PLAYER_FRAME_SIZE;
+    this.player.setScale(playerScale);
+    this.player.body.setSize(PLAYER_FRAME_SIZE * 0.5, PLAYER_FRAME_SIZE * 0.7);
+    this.player.body.setOffset(PLAYER_FRAME_SIZE * 0.25, PLAYER_FRAME_SIZE * 0.25);
 
     this.cameras.main.startFollow(this.player);
 
@@ -110,6 +124,14 @@ export default class GameScene extends Phaser.Scene {
       blendMode: 'ADD',
       emitting: false
     });
+    this.lightningGlowEmitter = this.add.particles(0, 0, 'spark', {
+      speed: { min: 10, max: 40 },
+      lifespan: 200,
+      scale: { start: 0.9, end: 0 },
+      tint: LIGHTNING_COLOR,
+      blendMode: 'ADD',
+      emitting: false
+    });
     this.mobHitEmitter = this.add.particles(0, 0, 'spark', {
       speed: { min: 60, max: 160 },
       lifespan: 300,
@@ -141,7 +163,7 @@ export default class GameScene extends Phaser.Scene {
     if (this.gameOver) return;
     this.handleMovement();
     this.updateMobBehavior(delta);
-    this.updateHomingProjectiles();
+    this.updateHomingProjectiles(delta);
     this.updateOrbitProjectiles(delta);
     this.updateFiring(delta);
     this.updatePlayerInvulnBlink(time);
@@ -190,14 +212,16 @@ export default class GameScene extends Phaser.Scene {
     this.fireWandChain();
   }
 
-  updateHomingProjectiles() {
+  // 발사각에서 목표 각도로 즉시 꺾이지 않고, proj.homingTurnRate(deg/s)만큼씩 서서히 회전함 (AddForce형 유도)
+  updateHomingProjectiles(delta) {
     this.projectiles.children.iterate((proj) => {
       if (!proj || !proj.active || !proj.homing) return;
       const target = proj.homingTarget;
       if (!target || !target.active) return;
-      const angle = Phaser.Math.Angle.Between(proj.x, proj.y, target.x, target.y);
-      proj.travelAngle = angle;
-      this.physics.velocityFromRotation(angle, proj.speed, proj.body.velocity);
+      const desiredAngle = Phaser.Math.Angle.Between(proj.x, proj.y, target.x, target.y);
+      const maxStep = Phaser.Math.DegToRad(proj.homingTurnRate) * (delta / 1000);
+      proj.travelAngle = Phaser.Math.Angle.RotateTo(proj.travelAngle, desiredAngle, maxStep);
+      this.physics.velocityFromRotation(proj.travelAngle, proj.speed, proj.body.velocity);
     });
   }
 
@@ -205,6 +229,7 @@ export default class GameScene extends Phaser.Scene {
     if (this.joystick.active) {
       const vec = this.joystick.getVector();
       this.player.body.setVelocity(vec.x * PLAYER_SPEED, vec.y * PLAYER_SPEED);
+      this.updatePlayerFacing(vec.x, vec.y);
       return;
     }
 
@@ -213,12 +238,27 @@ export default class GameScene extends Phaser.Scene {
     const up = this.cursors.up.isDown || this.wasd.W.isDown;
     const down = this.cursors.down.isDown || this.wasd.S.isDown;
 
-    const vec = new Phaser.Math.Vector2(
-      (right ? 1 : 0) - (left ? 1 : 0),
-      (down ? 1 : 0) - (up ? 1 : 0)
-    ).normalize().scale(PLAYER_SPEED);
+    const dirX = (right ? 1 : 0) - (left ? 1 : 0);
+    const dirY = (down ? 1 : 0) - (up ? 1 : 0);
+    const vec = new Phaser.Math.Vector2(dirX, dirY).normalize().scale(PLAYER_SPEED);
 
     this.player.body.setVelocity(vec.x, vec.y);
+    this.updatePlayerFacing(dirX, dirY);
+  }
+
+  updatePlayerFacing(dirX, dirY) {
+    if (dirX === 0 && dirY === 0) return;
+    const angle = Phaser.Math.RadToDeg(Math.atan2(dirY, dirX));
+    let dir;
+    if (angle >= -22.5 && angle < 22.5) dir = 'E';
+    else if (angle >= 22.5 && angle < 67.5) dir = 'SE';
+    else if (angle >= 67.5 && angle < 112.5) dir = 'S';
+    else if (angle >= 112.5 && angle < 157.5) dir = 'SW';
+    else if (angle >= -67.5 && angle < -22.5) dir = 'NE';
+    else if (angle >= -112.5 && angle < -67.5) dir = 'N';
+    else if (angle >= -157.5 && angle < -112.5) dir = 'NW';
+    else dir = 'W';
+    this.player.setFrame(DIR_FRAME[dir]);
   }
 
   findNearestMob() {
@@ -233,6 +273,17 @@ export default class GameScene extends Phaser.Scene {
       }
     });
     return nearest;
+  }
+
+  // 번개용: 가장 가까운 적이 아니라 사거리 내 몹 중 랜덤으로 하나 고름
+  findRandomMobInRange(range) {
+    const inRange = [];
+    this.mobs.children.iterate((mob) => {
+      if (!mob || !mob.active) return;
+      if (Phaser.Math.Distance.Between(this.player.x, this.player.y, mob.x, mob.y) <= range) inRange.push(mob);
+    });
+    if (inRange.length === 0) return null;
+    return inRange[Phaser.Math.Between(0, inRange.length - 1)];
   }
 
   renderWandUI() {
@@ -286,6 +337,11 @@ export default class GameScene extends Phaser.Scene {
 
     if (weaponType === 'meteor') {
       this.launchMeteorEffects(effects);
+      return;
+    }
+
+    if (weaponType === 'lightning') {
+      this.launchLightningEffects(effects);
       return;
     }
 
@@ -413,6 +469,76 @@ export default class GameScene extends Phaser.Scene {
     }
   }
 
+  // 번개: 가장 가까운 적이 아니라 사거리 내 랜덤 몹을 향해 쏨. projectileCount만큼 각각 독립적으로 랜덤 타겟을 다시 고름.
+  launchLightningEffects(effects) {
+    effects.forEach((effect) => {
+      const count = effect.projectileCount || 1;
+      for (let i = 0; i < count; i++) {
+        const target = this.findRandomMobInRange(LIGHTNING_RANGE);
+        if (!target) continue;
+        this.fireLightningBolt(this.player.x, this.player.y, target, effect);
+      }
+    });
+  }
+
+  // 즉시 판정되는 번개. 레이저와 달리 직선이 아니라 목표를 향해 살짝 불규칙하게 꺾이는 폴리라인(유도형) 경로이고
+  // 사거리가 더 짧음. 경로 위 각 구간마다 몹을 검사해서 걸리는 몹 전부(중복 제외) 맞힘.
+  fireLightningBolt(x, y, target, effect) {
+    const points = this.buildLightningPath(x, y, target.x, target.y);
+    this.drawLightningFx(points);
+
+    const hitMobs = new Set();
+    for (let i = 0; i < points.length - 1; i++) {
+      const [x1, y1] = points[i];
+      const [x2, y2] = points[i + 1];
+      const angle = Phaser.Math.Angle.Between(x1, y1, x2, y2);
+      this.mobs.children.iterate((mob) => {
+        if (!mob || !mob.active || hitMobs.has(mob)) return;
+        const dist = this.distanceToSegment(mob.x, mob.y, x1, y1, x2, y2);
+        if (dist <= LIGHTNING_HIT_WIDTH / 2 + mob.body.width / 2) {
+          hitMobs.add(mob);
+          this.applyHit(mob, effect, mob.x, mob.y, angle);
+        }
+      });
+    }
+  }
+
+  // 시작점~목표점을 LIGHTNING_SEGMENTS 구간으로 나누고, 각 중간점을 진행 방향의 수직으로 살짝 흔들어
+  // 대체로 목표를 향하는(유도) 선형이되 불규칙하게 꺾이는 경로를 만듦
+  buildLightningPath(x1, y1, x2, y2) {
+    const dx = x2 - x1;
+    const dy = y2 - y1;
+    const len = Math.hypot(dx, dy) || 1;
+    const nx = -dy / len;
+    const ny = dx / len;
+
+    const points = [[x1, y1]];
+    for (let i = 1; i < LIGHTNING_SEGMENTS; i++) {
+      const t = i / LIGHTNING_SEGMENTS;
+      const jitter = Phaser.Math.Between(-LIGHTNING_JITTER, LIGHTNING_JITTER);
+      points.push([x1 + dx * t + nx * jitter, y1 + dy * t + ny * jitter]);
+    }
+    points.push([x2, y2]);
+    return points;
+  }
+
+  drawLightningFx(points) {
+    const g = this.add.graphics().setBlendMode(Phaser.BlendModes.ADD);
+    g.lineStyle(6, LIGHTNING_COLOR, 0.35);
+    g.beginPath();
+    g.moveTo(points[0][0], points[0][1]);
+    for (let i = 1; i < points.length; i++) g.lineTo(points[i][0], points[i][1]);
+    g.strokePath();
+    g.lineStyle(2, LIGHTNING_COLOR, 0.9);
+    g.beginPath();
+    g.moveTo(points[0][0], points[0][1]);
+    for (let i = 1; i < points.length; i++) g.lineTo(points[i][0], points[i][1]);
+    g.strokePath();
+    this.time.delayedCall(120, () => g.destroy());
+
+    points.forEach(([px, py]) => this.lightningGlowEmitter.emitParticleAt(px, py, 1));
+  }
+
   // 즉시 판정되는 직선 빔. 경로에 걸리는 몹 전부를 맞히고, 각 몹마다 독립적으로 onHit이 트리거됨.
   fireLaserBeam(x, y, angle, effect) {
     const endX = x + Math.cos(angle) * LASER_RANGE;
@@ -465,6 +591,7 @@ export default class GameScene extends Phaser.Scene {
   damageMob(mob, amount, x, y, freeze) {
     if (!mob.active) return;
     mob.hp -= amount;
+    this.maxHit = Math.max(this.maxHit, amount);
     this.mobHitEmitter.explode(8, x, y);
 
     if (freeze) {
@@ -477,6 +604,7 @@ export default class GameScene extends Phaser.Scene {
       mob.type.onDeath(this, mob);
       this.deactivate(mob);
       this.score += mob.type.scoreValue();
+      this.kills += 1;
       this.updateHud();
     }
   }
@@ -501,6 +629,7 @@ export default class GameScene extends Phaser.Scene {
     proj.speed = effect.speed;
     proj.homing = !!effect.homing;
     proj.homingTarget = effect.homing ? this.findNearestMob() : null;
+    proj.homingTurnRate = effect.homingTurnRate;
     proj.freeze = !!effect.freeze;
     proj.onHit = effect.onHit || null;
     proj.orbit = false;
@@ -615,7 +744,7 @@ export default class GameScene extends Phaser.Scene {
   onChestPickup(chest) {
     chest.destroy();
     this.scene.pause();
-    this.scene.launch('WandChoice');
+    this.scene.launch('WandChoice', { mode: 'pickup' });
   }
 
   updateMobBehavior(delta) {
@@ -671,6 +800,13 @@ export default class GameScene extends Phaser.Scene {
   endGame() {
     this.gameOver = true;
     const { width, height } = this.scale;
+
+    recordRun({
+      wands: getOrderedWands().map((w) => (w.level > 1 ? `${w.name} Lv.${w.level}` : w.name)),
+      score: this.score,
+      kills: this.kills,
+      maxHit: this.maxHit
+    });
 
     this.add.text(width / 2, height / 2 - 60, 'GAME OVER', {
       color: '#ff5555',

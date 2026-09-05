@@ -29,7 +29,9 @@
 //   impactRadius: number       - 범위 공격(메테오 등) 폭발 반지름 px (구간 첫 지팡이의 baseStats.impactRadius로 결정, 기본 0)
 //   burn: boolean              - 화상 상태이상 부여 여부
 //   splitOnHit: boolean        - (표시용) 피격 시 분열 능력이 있다는 도감 설명용 플래그. 실제 자식 탄 생성 여부는 onHit 필드로 결정됨
-//   homing: boolean            - 가장 가까운 적을 매 프레임 추적
+//   homing: boolean            - 가장 가까운 적을 추적 (즉시 방향 전환이 아니라 homingTurnRate만큼씩 서서히 꺾임)
+//   homingTurnRate: number     - 유도 성능(초당 회전 각도, deg/s). homing 탄 전용이지만 필드 자체는 범용이라
+//                                다른 유도 기능(예: 다른 지팡이의 유도 자식 탄)에도 그대로 재사용 가능
 //   freeze: boolean            - 적중한 적을 일정 시간 정지시킴
 //   onHit: effect[] | undefined - 이 탄이 적중했을 때 생성할 자식 탄들의 effect (onHit 창조자를 거쳤을 때만 존재)
 //
@@ -46,6 +48,7 @@ export function createBaseEffect() {
     projectileCount: 1,
     projectileRadius: 5,
     impactRadius: 0,
+    homingTurnRate: 220,
     burn: false
   };
 }

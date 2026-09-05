@@ -8,6 +8,7 @@ import CodexScene from './scenes/CodexScene.js';
 import SettingsScene from './scenes/SettingsScene.js';
 import TestLoadoutScene from './scenes/TestLoadoutScene.js';
 import WandPickerScene from './scenes/WandPickerScene.js';
+import HistoryScene from './scenes/HistoryScene.js';
 
 new Phaser.Game({
   type: Phaser.AUTO,
@@ -26,5 +27,5 @@ new Phaser.Game({
       debug: false
     }
   },
-  scene: [BootScene, LobbyScene, GameScene, WandEditScene, WandChoiceScene, CodexScene, SettingsScene, TestLoadoutScene, WandPickerScene]
+  scene: [BootScene, LobbyScene, GameScene, WandEditScene, WandChoiceScene, CodexScene, SettingsScene, TestLoadoutScene, WandPickerScene, HistoryScene]
 });

@@ -31,6 +31,19 @@ export default class LobbyScene extends Phaser.Scene {
     settingsBtn.on('pointerout', () => settingsBtn.setStyle({ backgroundColor: '#3a3f4b' }));
     settingsBtn.on('pointerdown', () => this.scene.start('Settings'));
 
+    const historyBtn = this.add.text(settingsBtn.getBounds().left - 10, 20, '기록', {
+      fontSize: '18px',
+      color: '#ffffff',
+      backgroundColor: '#3a3f4b',
+      padding: { x: 14, y: 8 }
+    })
+      .setOrigin(1, 0)
+      .setInteractive({ useHandCursor: true });
+
+    historyBtn.on('pointerover', () => historyBtn.setStyle({ backgroundColor: '#4a5063' }));
+    historyBtn.on('pointerout', () => historyBtn.setStyle({ backgroundColor: '#3a3f4b' }));
+    historyBtn.on('pointerdown', () => this.scene.start('History'));
+
     const button = this.add.text(width / 2, height - 80, 'Game Start', {
       fontSize: '28px',
       color: '#ffffff',

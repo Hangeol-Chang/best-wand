@@ -10,7 +10,8 @@ export const WAND_COLORS = {
   rapidFire: 0xf6ad55,
   heavy: 0x8b5e3c,
   orbit: 0x4ade80,
-  meteor: 0xff8800
+  meteor: 0xff8800,
+  lightning: 0xffe066
 };
 
 export function wandColor(id) {

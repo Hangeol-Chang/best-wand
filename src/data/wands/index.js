@@ -10,5 +10,6 @@ import rapidFire from './rapidFire.js';
 import heavy from './heavy.js';
 import orbit from './orbit.js';
 import meteor from './meteor.js';
+import lightning from './lightning.js';
 
-export const WANDS = [fireball, laser, split, splitShot, homing, freeze, branch, rapidFire, heavy, orbit, meteor];
+export const WANDS = [fireball, laser, split, splitShot, homing, freeze, branch, rapidFire, heavy, orbit, meteor, lightning];

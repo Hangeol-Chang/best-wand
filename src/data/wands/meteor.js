@@ -6,7 +6,7 @@ export default {
   weaponType: 'meteor',
   baseStats(level) {
     return {
-      damage: 25 + (level - 1) * 7,
+      damage: 45 + (level - 1) * 15,
       fireRateMs: 1500,
       lifetimeMs: 2200,
       impactRadius: 70,

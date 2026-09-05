@@ -6,7 +6,7 @@ export default class BootScene extends Phaser.Scene {
   }
 
   preload() {
-    // 실제 에셋 로드는 다음 에이전트가 채워넣음
+    this.load.spritesheet('character', 'character.png', { frameWidth: 418, frameHeight: 418 });
   }
 
   create() {

@@ -8,7 +8,7 @@ export default {
     return {
       damage: 8 + (level - 1) * 3,
       speed: 140,
-      fireRateMs: 2000,
+      fireRateMs: 400,
       lifetimeMs: 4000,
       projectileCount: 2
     };
