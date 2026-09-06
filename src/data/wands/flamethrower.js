@@ -3,9 +3,8 @@ export default {
   name: '화염방사기',
   baseStats(level) {
     return {
-      damage: 4 + (level - 1) * 1,
       speed: 420,
-      fireRateMs: 45,
+      fireRateMs: 70,
       lifetimeMs: 700,
       radius: 4,
       decel: 2.2
@@ -14,7 +13,8 @@ export default {
   apply(effect) {
     return {
       ...effect,
-      quantity: effect.quantity * 12,
+      damage: effect.damage + 1,
+      quantity: effect.quantity * 0.4,
       spreadDeg: effect.spreadDeg + 6,
       spreadJitterDeg: effect.spreadJitterDeg + 8,
       clusterRadius: 24,

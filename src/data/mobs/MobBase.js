@@ -5,7 +5,7 @@ export default class MobBase {
   static id = 'mob';
   static size = 24;
   static color = 0xe53e3e;
-  static hp = 20;
+  static hp = 100;
   static damage = 10;   // 플레이어와 접촉 시 주는 피해
   static speed = 90;    // 이동 속도 px/s
   static isBoss = false;

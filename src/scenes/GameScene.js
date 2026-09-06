@@ -114,6 +114,8 @@ export default class GameScene extends Phaser.Scene {
     this.updateMobBehavior(delta);
     this.updateFiring(delta);
     this.updateProjectileDecel(delta);
+    this.updateProjectileHoming(delta);
+    this.updateProjectileSpiral(delta);
     this.updatePlayerInvulnBlink(time);
   }
 
@@ -196,12 +198,12 @@ export default class GameScene extends Phaser.Scene {
     this.player.setFrame(DIR_FRAME[dir]);
   }
 
-  findNearestMob() {
+  findNearestMob(fromX = this.player.x, fromY = this.player.y) {
     let nearest = null;
     let nearestDistSq = Infinity;
     this.mobs.children.iterate((mob) => {
       if (!mob || !mob.active) return;
-      const d = Phaser.Math.Distance.Squared(this.player.x, this.player.y, mob.x, mob.y);
+      const d = Phaser.Math.Distance.Squared(fromX, fromY, mob.x, mob.y);
       if (d < nearestDistSq) {
         nearestDistSq = d;
         nearest = mob;
@@ -321,7 +323,19 @@ export default class GameScene extends Phaser.Scene {
     dot.travelAngle = angle;
     dot.decel = effect.decel;
     dot.currentSpeed = effect.speed * (effect.speedJitter ? 1 + Phaser.Math.FloatBetween(-effect.speedJitter, effect.speedJitter) : 1);
-    this.physics.velocityFromRotation(angle, dot.currentSpeed, dot.body.velocity);
+    dot.age = 0;
+    dot.homingDelayMs = effect.homingDelayMs;
+    dot.homingAccel = effect.homingAccel;
+    dot.homingTurnDeg = effect.homingTurnDeg;
+    dot.homingTarget = undefined;
+    dot.spiralRadius = effect.spiralRadius;
+    dot.spiralDeg = effect.spiralDeg * Phaser.Math.FloatBetween(0.6, 1.4) * (Math.random() < 0.5 ? -1 : 1);
+    dot.spiralPhase = Math.random() * Math.PI * 2;
+    dot.forwardDist = 0;
+    dot.spawnX = x;
+    dot.spawnY = y;
+    if (dot.spiralRadius) dot.body.velocity.set(0, 0);
+    else this.physics.velocityFromRotation(angle, dot.currentSpeed, dot.body.velocity);
 
     if (dot.lifetimeTimer) dot.lifetimeTimer.remove();
     dot.lifetimeTimer = this.time.delayedCall(effect.lifetimeMs, () => this.deactivate(dot));
@@ -333,6 +347,46 @@ export default class GameScene extends Phaser.Scene {
       if (!dot || !dot.active || !dot.decel) return;
       dot.currentSpeed *= Math.exp(-dot.decel * (delta / 1000));
       this.physics.velocityFromRotation(dot.travelAngle, dot.currentSpeed, dot.body.velocity);
+    });
+  }
+
+  // homingDelayMs 동안은 그대로 직진, 이후 가장 가까운 적 쪽으로 서서히 방향을 틀며 가속 (저격 유도탄용)
+  updateProjectileHoming(delta) {
+    this.projectiles.children.iterate((dot) => {
+      if (!dot || !dot.active || (!dot.homingAccel && !dot.homingTurnDeg)) return;
+      dot.age += delta;
+      if (dot.age < dot.homingDelayMs) return;
+
+      if (dot.homingTarget === undefined) {
+        dot.homingTarget = this.findNearestMob(dot.x, dot.y);
+        dot.homingTargetGen = dot.homingTarget ? dot.homingTarget.genId : null;
+      }
+      if (dot.homingTurnDeg && dot.homingTarget && dot.homingTarget.active && dot.homingTarget.genId === dot.homingTargetGen) {
+        const targetAngle = Phaser.Math.Angle.Between(dot.x, dot.y, dot.homingTarget.x, dot.homingTarget.y);
+        const step = Phaser.Math.DegToRad(dot.homingTurnDeg) * (delta / 1000);
+        dot.travelAngle = Phaser.Math.Angle.RotateTo(dot.travelAngle, targetAngle, step);
+      }
+      if (dot.homingAccel) dot.currentSpeed += dot.homingAccel * (delta / 1000);
+      this.physics.velocityFromRotation(dot.travelAngle, dot.currentSpeed, dot.body.velocity);
+    });
+  }
+
+  // spiralRadius가 있으면 travelAngle 방향으로 등속 전진하는 "보이지 않는 중심점" 둘레를
+  // spiralDeg 각속도로 실제 원형 궤도를 그리며 도는 것처럼 움직임 (쌍성 운동 느낌)
+  updateProjectileSpiral(delta) {
+    this.projectiles.children.iterate((dot) => {
+      if (!dot || !dot.active || !dot.spiralRadius) return;
+      const dt = delta / 1000;
+      dot.forwardDist += dot.currentSpeed * dt;
+      dot.spiralPhase += Phaser.Math.DegToRad(dot.spiralDeg) * dt;
+
+      const angle = dot.travelAngle;
+      const centerX = dot.spawnX + Math.cos(angle) * dot.forwardDist;
+      const centerY = dot.spawnY + Math.sin(angle) * dot.forwardDist;
+      dot.setPosition(
+        centerX + Math.cos(dot.spiralPhase) * dot.spiralRadius,
+        centerY + Math.sin(dot.spiralPhase) * dot.spiralRadius
+      );
     });
   }
 
@@ -355,6 +409,7 @@ export default class GameScene extends Phaser.Scene {
     mob.body.setSize(MobType.size, MobType.size);
     mob.setFillStyle(MobType.color);
     mob.hp = MobType.hp;
+    mob.genId = (mob.genId ?? 0) + 1;
     mob.type = MobType;
 
     const halfW = this.cameras.main.width / 2 + MOB_SPAWN_MARGIN;

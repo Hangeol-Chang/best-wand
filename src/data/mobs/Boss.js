@@ -4,7 +4,7 @@ export default class Boss extends MobBase {
   static id = 'boss';
   static size = 48;
   static color = 0x7c3aed;
-  static hp = MobBase.hp * 6;
+  static hp = 2000;
   static damage = 25;
   static speed = MobBase.speed * 0.6;
   static isBoss = true;

@@ -11,13 +11,17 @@
 //   apply(effect, level)이 배열을 반환하면 그 지점에서 병렬로 갈래가 나뉨 (분기 지팡이).
 //
 // effect 스키마 (지팡이 체인 하나가 최종적으로 가지는 파티클 발사 속성 묶음 - GameScene이 이 값으로 작은 사각 도트를 뿌림):
-//   damage: number     - 도트 하나가 명중 시 주는 피해량 (구간 첫 지팡이의 baseStats.damage로 결정)
+//   damage: number     - 도트 하나가 명중 시 주는 피해량. baseStats가 아니라 apply()에서 각 지팡이가
+//                         자기 몫을 더함 (합연산) - 체인에 낀 지팡이 전부의 damage가 누적됨
 //   speed: number       - 도트 이동 속도 px/s (구간 첫 지팡이의 baseStats.speed로 결정)
 //   fireRateMs: number  - 발사 간격 ms (구간 첫 지팡이의 baseStats.fireRateMs로 결정)
 //   lifetimeMs: number  - 도트가 사라지기까지 시간 ms (사거리 = speed * lifetimeMs)
 //   radius: number      - 도트 반지름 px (구간 첫 지팡이의 baseStats.radius로 결정)
 //   radiusJitter: number - 도트 크기 랜덤 편차 비율 (0~1). radius를 최대 크기로 두고 radius * (1 - random*radiusJitter)로 그 아래로만 랜덤
-//   quantity: number    - 한 번 발사에 뿌릴 도트 개수. 곱연산으로 조합됨 (지팡이별로 x2, x3 등)
+//   quantity: number    - 한 번 발사에 뿌릴 도트 개수. 기준값 100에서 시작, 각 지팡이는 자기 몫을
+//                         0~1 사이 비율로 곱함 (예: 0.4면 혼자일 때 40개). 비율끼리 곱하면 자동으로
+//                         더 작아지므로(0.4*0.6=0.24) 여러 지팡이를 이어붙여도 폭발적으로 안 늘어남.
+//                         절대 개수가 고정이어야 하는 지팡이(예: 저격 1발)는 비율 대신 그냥 수치를 덮어씀.
 //   spreadDeg: number   - 조준 방향 기준 부채꼴 퍼짐 각도(deg). 지팡이가 자기 몫을 더해서 넓힘
 //   spreadJitterDeg: number - 도트 하나하나에 랜덤으로 더 얹는 퍼짐(deg, ±jitter/2). 덩어리가 흩어지는 느낌용
 //   decel: number       - 초당 감속 비율(1/s, 지수감쇠: speed *= e^-decel*dt). 0이면 등속, 값이 있으면
@@ -27,26 +31,36 @@
 //   speedJitter: number - 도트 속도 랜덤 편차 비율(0~1). speed * (1 ± speedJitter)로 도트마다 속도 랜덤
 //   radial: boolean     - true면 조준 없이 360도 전방위로 도트를 뿌림 (아무 지팡이나 켤 수 있음, 한 번 켜지면 유지)
 //   color: number       - 도트 색 (hex). 마지막에 설정한 지팡이가 이김
+//   homingDelayMs: number - 발사 후 이 시간(ms) 동안은 가속/유도 없이 baseStats.speed 그대로 직진
+//   homingAccel: number - homingDelayMs 이후 초당 속도 증가량(px/s^2) - 점점 빨라짐
+//   homingTurnDeg: number - homingDelayMs 이후 초당 회전각(deg/s) - 가장 가까운 적 방향으로 서서히 유도
+//   spiralRadius: number - 있으면 도트가 전진하는 보이지 않는 중심점 둘레를 실제 원형 궤도로 돎(쌍성 운동)
+//   spiralDeg: number   - 궤도 각속도(deg/s) 기준값 - 도트마다 0.6~1.4배 랜덤 + 좌/우 방향도 랜덤으로 걸림
 //   onHit: effect[] | undefined - 이 도트가 적중했을 때 생성할 자식 도트들의 effect (onHit 창조자를 거쳤을 때만 존재)
 //
 // 새 필드 추가 시 이 목록에 같이 적을 것.
 
 export function createBaseEffect() {
   return {
-    damage: 10,
+    damage: 0,
     speed: 220,
     fireRateMs: 500,
     lifetimeMs: 500,
     radius: 4,
     radiusJitter: 0,
-    quantity: 1,
+    quantity: 100,
     spreadDeg: 10,
     spreadJitterDeg: 0,
     decel: 0,
     clusterRadius: 0,
     speedJitter: 0,
     radial: false,
-    color: 0xffffff
+    color: 0xffffff,
+    homingDelayMs: 0,
+    homingAccel: 0,
+    homingTurnDeg: 0,
+    spiralRadius: 0,
+    spiralDeg: 0
   };
 }
 
