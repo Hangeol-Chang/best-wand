@@ -9,12 +9,15 @@ const FIELD_LABELS = {
   damage: '피해량',
   speed: '속도',
   fireRateMs: '발사 간격(ms)',
-  fireRateMultiplier: '연사 배율',
-  projectileCount: '투사체 수',
-  burn: '화상',
-  splitOnHit: '피격 시 분열',
-  homing: '유도',
-  freeze: '빙결'
+  radius: '도트 크기',
+  radiusJitter: '크기 랜덤',
+  quantity: '도트 수',
+  spreadDeg: '퍼짐 각도',
+  spreadJitterDeg: '랜덤 퍼짐',
+  decel: '감속도',
+  clusterRadius: '덩어리 반경',
+  speedJitter: '속도 랜덤',
+  radial: '전방위 발사'
 };
 
 function describeWand(wand) {
@@ -40,7 +43,7 @@ function describeWand(wand) {
     const label = FIELD_LABELS[key];
     if (typeof result[key] === 'boolean') {
       lines.push(`${label}: 부여`);
-    } else if (key === 'projectileCount' || key === 'fireRateMultiplier') {
+    } else if (key === 'quantity') {
       const ratio = result[key] / base[key];
       lines.push(`${label}: x${ratio}`);
     } else {

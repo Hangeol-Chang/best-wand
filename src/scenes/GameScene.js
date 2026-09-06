@@ -21,44 +21,9 @@ const MAX_HP = 100;
 const HP_BAR_WIDTH = 160;
 const HP_BAR_HEIGHT = 14;
 const HIT_PARTICLE_COLOR = 0xe53e3e;
-const FREEZE_DURATION_MS = 1500;
-const BRANCH_SPREAD_DEG = 30;
-const FAN_SPREAD_DEG = 15;
-const LASER_RANGE = 750;
-const LASER_HIT_WIDTH = 16;
-const LASER_COLOR = 0x66e0ff;
-const ORBIT_RADIUS = 90;
-const ORBIT_LAUNCH_SPEED = 260;
-const METEOR_FALL_MS = 700;
-const METEOR_SCATTER = 40;
-const METEOR_COLOR = 0xff8800;
-const LIGHTNING_RANGE = 420;
-const LIGHTNING_HIT_WIDTH = 14;
-const LIGHTNING_SEGMENTS = 5;
-const LIGHTNING_JITTER = 26;
-const LIGHTNING_COLOR = 0xffe066;
 const CHEST_SIZE = 20;
 const CHEST_COLOR = 0xffd700;
-
-// 능력별 고유 색 - 여러 능력 조합 시 평균 혼합해서 표시
-const BASE_PROJECTILE_COLOR = 0xf6ad55;
-const ABILITY_COLORS = {
-  burn: 0xff4d4d,
-  splitOnHit: 0xb266ff,
-  homing: 0x33ff99,
-  freeze: 0x66ccff
-};
-
-function projectileColor(effect) {
-  const active = Object.keys(ABILITY_COLORS).filter((key) => effect[key]);
-  if (active.length === 0) return BASE_PROJECTILE_COLOR;
-  let r = 0, g = 0, b = 0;
-  active.forEach((key) => {
-    const c = Phaser.Display.Color.IntegerToColor(ABILITY_COLORS[key]);
-    r += c.red; g += c.green; b += c.blue;
-  });
-  return Phaser.Display.Color.GetColor(r / active.length, g / active.length, b / active.length);
-}
+const MUZZLE_RADIUS = 28; // 도트 발사 시작점 - 플레이어 중앙이 아니라 이 반경의 원 경계, 발사 방향 쪽에서 나감
 
 export default class GameScene extends Phaser.Scene {
   constructor() {
@@ -116,22 +81,6 @@ export default class GameScene extends Phaser.Scene {
     }).setOrigin(1, 0).setScrollFactor(0).setInteractive({ useHandCursor: true });
     this.settingsBtn.on('pointerdown', () => this.openSettings());
 
-    this.laserGlowEmitter = this.add.particles(0, 0, 'spark', {
-      speed: { min: 10, max: 40 },
-      lifespan: 200,
-      scale: { start: 0.9, end: 0 },
-      tint: LASER_COLOR,
-      blendMode: 'ADD',
-      emitting: false
-    });
-    this.lightningGlowEmitter = this.add.particles(0, 0, 'spark', {
-      speed: { min: 10, max: 40 },
-      lifespan: 200,
-      scale: { start: 0.9, end: 0 },
-      tint: LIGHTNING_COLOR,
-      blendMode: 'ADD',
-      emitting: false
-    });
     this.mobHitEmitter = this.add.particles(0, 0, 'spark', {
       speed: { min: 60, max: 160 },
       lifespan: 300,
@@ -163,9 +112,8 @@ export default class GameScene extends Phaser.Scene {
     if (this.gameOver) return;
     this.handleMovement();
     this.updateMobBehavior(delta);
-    this.updateHomingProjectiles(delta);
-    this.updateOrbitProjectiles(delta);
     this.updateFiring(delta);
+    this.updateProjectileDecel(delta);
     this.updatePlayerInvulnBlink(time);
   }
 
@@ -201,7 +149,7 @@ export default class GameScene extends Phaser.Scene {
   getFireIntervalMs() {
     const effects = resolveWandChain(getOrderedWands(), createBaseEffect());
     const effect = effects[0] || createBaseEffect();
-    return effect.fireRateMs * (effect.fireRateMultiplier ?? 1);
+    return effect.fireRateMs;
   }
 
   updateFiring(delta) {
@@ -210,19 +158,6 @@ export default class GameScene extends Phaser.Scene {
     if (this.fireAccumulatorMs < interval) return;
     this.fireAccumulatorMs -= interval;
     this.fireWandChain();
-  }
-
-  // 발사각에서 목표 각도로 즉시 꺾이지 않고, proj.homingTurnRate(deg/s)만큼씩 서서히 회전함 (AddForce형 유도)
-  updateHomingProjectiles(delta) {
-    this.projectiles.children.iterate((proj) => {
-      if (!proj || !proj.active || !proj.homing) return;
-      const target = proj.homingTarget;
-      if (!target || !target.active) return;
-      const desiredAngle = Phaser.Math.Angle.Between(proj.x, proj.y, target.x, target.y);
-      const maxStep = Phaser.Math.DegToRad(proj.homingTurnRate) * (delta / 1000);
-      proj.travelAngle = Phaser.Math.Angle.RotateTo(proj.travelAngle, desiredAngle, maxStep);
-      this.physics.velocityFromRotation(proj.travelAngle, proj.speed, proj.body.velocity);
-    });
   }
 
   handleMovement() {
@@ -275,17 +210,6 @@ export default class GameScene extends Phaser.Scene {
     return nearest;
   }
 
-  // 번개용: 가장 가까운 적이 아니라 사거리 내 몹 중 랜덤으로 하나 고름
-  findRandomMobInRange(range) {
-    const inRange = [];
-    this.mobs.children.iterate((mob) => {
-      if (!mob || !mob.active) return;
-      if (Phaser.Math.Distance.Between(this.player.x, this.player.y, mob.x, mob.y) <= range) inRange.push(mob);
-    });
-    if (inRange.length === 0) return null;
-    return inRange[Phaser.Math.Between(0, inRange.length - 1)];
-  }
-
   renderWandUI() {
     const iconW = 28;
     const iconH = 18;
@@ -326,377 +250,89 @@ export default class GameScene extends Phaser.Scene {
 
   fireWandChain() {
     if (this.gameOver) return;
-    const wands = getOrderedWands();
-    const effects = resolveWandChain(wands, createBaseEffect());
-    const weaponType = effects[0]?.weaponType || 'projectile';
+    const effects = resolveWandChain(getOrderedWands(), createBaseEffect());
+    effects.forEach((effect) => this.fireEffect(effect));
+  }
 
-    if (weaponType === 'orbit') {
-      this.launchOrbitEffects(effects);
-      return;
-    }
+  // effect.radial이면 조준 없이 360도로, 아니면 가장 가까운 몹 방향 기준 spreadDeg 부채꼴로 quantity개 도트를 뿌림.
+  // 적중 시 생성되는 자식 도트(effect.onHit)도 이 함수로 재사용됨.
+  fireEffect(effect) {
+    const count = Math.max(1, Math.round(effect.quantity));
 
-    if (weaponType === 'meteor') {
-      this.launchMeteorEffects(effects);
-      return;
-    }
+    const jitter = Phaser.Math.DegToRad(effect.spreadJitterDeg);
+    const jitterAngle = () => (jitter ? Phaser.Math.FloatBetween(-jitter / 2, jitter / 2) : 0);
 
-    if (weaponType === 'lightning') {
-      this.launchLightningEffects(effects);
+    // clusterRadius가 있으면 한 점이 아니라 원판 안에 흩어진 위치에서 출발 - "덩어리째 발사"로 보이게 함
+    const clusterOffset = () => {
+      if (!effect.clusterRadius) return { x: 0, y: 0 };
+      const r = effect.clusterRadius * Math.sqrt(Math.random());
+      const a = Math.random() * Math.PI * 2;
+      return { x: Math.cos(a) * r, y: Math.sin(a) * r };
+    };
+
+    // 발사 각도 쪽 원 경계(MUZZLE_RADIUS)에서 출발 - 플레이어 중앙에서 튀어나오지 않게
+    const muzzlePoint = (angle) => ({
+      x: this.player.x + Math.cos(angle) * MUZZLE_RADIUS,
+      y: this.player.y + Math.sin(angle) * MUZZLE_RADIUS
+    });
+
+    if (effect.radial) {
+      for (let i = 0; i < count; i++) {
+        const angle = (Math.PI * 2 * i) / count + jitterAngle();
+        const o = clusterOffset();
+        const m = muzzlePoint(angle);
+        this.spawnDot(m.x + o.x, m.y + o.y, angle, effect);
+      }
       return;
     }
 
     const target = this.findNearestMob();
     if (!target) return;
     const baseAngle = Phaser.Math.Angle.Between(this.player.x, this.player.y, target.x, target.y);
-    this.launchEffects(this.player.x, this.player.y, baseAngle, effects);
-  }
-
-  // effects 배열을 갈래(branch)로 부채꼴 배치하고, 항목별 projectileCount만큼 또 부채꼴로 나눠서
-  // callback(effect, angle)을 호출함. 프로젝타일/레이저 등 발사 방식이 달라도 이 배치 로직은 공유.
-  forEachShot(baseAngle, effects, callback) {
-    const branchSpread = Phaser.Math.DegToRad(BRANCH_SPREAD_DEG);
-    const fanSpread = Phaser.Math.DegToRad(FAN_SPREAD_DEG);
-
-    effects.forEach((effect, branchIndex) => {
-      const branchAngle = baseAngle + (effects.length === 1 ? 0 : branchSpread * (branchIndex - (effects.length - 1) / 2));
-      const count = effect.projectileCount || 1;
-      for (let i = 0; i < count; i++) {
-        const offset = count === 1 ? 0 : fanSpread * (i - (count - 1) / 2);
-        callback(effect, branchAngle + offset);
-      }
-    });
-  }
-
-  // 적중 시 생성되는 자식 탄(effect.onHit)도 이 함수로 그대로 재사용됨.
-  // effect.weaponType은 그 탄이 속한 구간의 첫 지팡이가 정한 것 - 자식 탄이 레이저면 여기서 레이저로 나감.
-  launchEffects(x, y, baseAngle, effects) {
-    this.forEachShot(baseAngle, effects, (effect, angle) => {
-      if (effect.weaponType === 'laser') {
-        this.fireLaserBeam(x, y, angle, effect);
-      } else {
-        this.spawnProjectile(x, y, angle, effect);
-      }
-    });
-  }
-
-  // 오빗 지팡이: 수명 없이 계속 도니까, 매 발사마다 새로 쏘는 게 아니라 목표 개수(projectileCount)에서
-  // 모자란 만큼만(적중으로 없어진 것 등) 채워 넣음. 부채꼴 조준 없이 원 위에 고르게 배치.
-  launchOrbitEffects(effects) {
-    effects.forEach((effect) => {
-      const desiredCount = effect.projectileCount || 1;
-      const currentCount = this.countActiveOrbitProjectiles();
-      for (let i = currentCount; i < desiredCount; i++) {
-        this.spawnOrbitProjectile(effect, (Math.PI * 2 * i) / desiredCount);
-      }
-    });
-  }
-
-  countActiveOrbitProjectiles() {
-    let count = 0;
-    this.projectiles.children.iterate((proj) => {
-      if (proj && proj.active && (proj.orbit || proj.orbitLaunching)) count += 1;
-    });
-    return count;
-  }
-
-  // 조준/부채꼴 없이 effects별 projectileCount개를 원 위에 고르게 뿌림.
-  // 메테오 폭발 지점에서 onHit(분열탄 등) 자식 탄을 한 번에 사방으로 날릴 때 씀 (방향성이 없으니 launchEffects의 부채꼴 대신 원형 배치)
-  launchEffectsRadial(x, y, effects) {
-    effects.forEach((effect) => {
-      const count = effect.projectileCount || 1;
-      for (let i = 0; i < count; i++) {
-        const angle = (Math.PI * 2 * i) / count;
-        if (effect.weaponType === 'laser') {
-          this.fireLaserBeam(x, y, angle, effect);
-        } else {
-          this.spawnProjectile(x, y, angle, effect);
-        }
-      }
-    });
-  }
-
-  // 메테오: 조준 없이 가장 가까운 몹 근처(없으면 플레이어 근처) 좌표를 골라 낙하 예고 후 지연 폭발시킴
-  launchMeteorEffects(effects) {
-    const target = this.findNearestMob();
-    effects.forEach((effect) => {
-      const count = effect.projectileCount || 1;
-      for (let i = 0; i < count; i++) {
-        const originX = target ? target.x : this.player.x;
-        const originY = target ? target.y : this.player.y;
-        const x = originX + Phaser.Math.Between(-METEOR_SCATTER, METEOR_SCATTER);
-        const y = originY + Phaser.Math.Between(-METEOR_SCATTER, METEOR_SCATTER);
-        this.spawnMeteor(x, y, effect);
-      }
-    });
-  }
-
-  // 낙하 예고(그림자 + 떨어지는 돌) 연출 후 METEOR_FALL_MS 뒤 폭발
-  spawnMeteor(x, y, effect) {
-    const impactRadius = effect.impactRadius || 70;
-    const boltRadius = effect.projectileRadius ?? 14;
-    const shadow = this.add.ellipse(x, y, impactRadius * 2, impactRadius, 0x000000, 0.35);
-    const bolt = this.add.circle(x, y - 260, boltRadius, METEOR_COLOR);
-
-    this.tweens.add({
-      targets: bolt,
-      y,
-      duration: METEOR_FALL_MS,
-      ease: 'Cubic.easeIn',
-      onComplete: () => {
-        bolt.destroy();
-        shadow.destroy();
-        this.explodeMeteor(x, y, effect);
-      }
-    });
-  }
-
-  // 메테오 폭발: 반경 내 몹 전부에게 데미지 적용, 그 다음 폭발 지점 한 곳에서만 onHit(분열탄 등) 자식 탄 트리거
-  explodeMeteor(x, y, effect) {
-    const radius = effect.impactRadius || 70;
-    this.mobHitEmitter.explode(16, x, y);
-    const fx = this.add.circle(x, y, radius, METEOR_COLOR, 0.5);
-    this.tweens.add({ targets: fx, alpha: 0, scale: 1.3, duration: 250, onComplete: () => fx.destroy() });
-
-    this.mobs.children.iterate((mob) => {
-      if (!mob || !mob.active) return;
-      const dist = Phaser.Math.Distance.Between(mob.x, mob.y, x, y);
-      if (dist > radius + mob.body.width / 2) return;
-      this.damageMob(mob, effect.damage + (effect.burn ? 5 : 0), mob.x, mob.y, effect.freeze);
-    });
-
-    if (effect.onHit) {
-      this.launchEffectsRadial(x, y, effect.onHit);
+    const spread = Phaser.Math.DegToRad(effect.spreadDeg);
+    for (let i = 0; i < count; i++) {
+      const angle = (count === 1 ? baseAngle : baseAngle - spread / 2 + (spread * i) / (count - 1)) + jitterAngle();
+      const o = clusterOffset();
+      const m = muzzlePoint(angle);
+      this.spawnDot(m.x + o.x, m.y + o.y, angle, effect);
     }
   }
 
-  // 번개: 가장 가까운 적이 아니라 사거리 내 랜덤 몹을 향해 쏨. projectileCount만큼 각각 독립적으로 랜덤 타겟을 다시 고름.
-  launchLightningEffects(effects) {
-    effects.forEach((effect) => {
-      const count = effect.projectileCount || 1;
-      for (let i = 0; i < count; i++) {
-        const target = this.findRandomMobInRange(LIGHTNING_RANGE);
-        if (!target) continue;
-        this.fireLightningBolt(this.player.x, this.player.y, target, effect);
-      }
-    });
-  }
-
-  // 즉시 판정되는 번개. 레이저와 달리 직선이 아니라 목표를 향해 살짝 불규칙하게 꺾이는 폴리라인(유도형) 경로이고
-  // 사거리가 더 짧음. 경로 위 각 구간마다 몹을 검사해서 걸리는 몹 전부(중복 제외) 맞힘.
-  fireLightningBolt(x, y, target, effect) {
-    const points = this.buildLightningPath(x, y, target.x, target.y);
-    this.drawLightningFx(points);
-
-    const hitMobs = new Set();
-    for (let i = 0; i < points.length - 1; i++) {
-      const [x1, y1] = points[i];
-      const [x2, y2] = points[i + 1];
-      const angle = Phaser.Math.Angle.Between(x1, y1, x2, y2);
-      this.mobs.children.iterate((mob) => {
-        if (!mob || !mob.active || hitMobs.has(mob)) return;
-        const dist = this.distanceToSegment(mob.x, mob.y, x1, y1, x2, y2);
-        if (dist <= LIGHTNING_HIT_WIDTH / 2 + mob.body.width / 2) {
-          hitMobs.add(mob);
-          this.applyHit(mob, effect, mob.x, mob.y, angle);
-        }
-      });
+  spawnDot(x, y, angle, effect) {
+    // radius를 최대 크기로 두고 그 아래로만 랜덤 - radius * FloatBetween(1-jitter, 1)
+    const jitteredRadius = effect.radiusJitter
+      ? effect.radius * Phaser.Math.FloatBetween(1 - effect.radiusJitter, 1)
+      : effect.radius;
+    const size = Math.max(1, jitteredRadius * 2);
+    let dot = this.projectiles.getFirstDead(false);
+    if (!dot) {
+      dot = this.add.rectangle(0, 0, size, size, effect.color);
+      this.physics.add.existing(dot);
+      this.projectiles.add(dot);
     }
+    dot.setActive(true).setVisible(true);
+    dot.body.enable = true;
+    dot.setPosition(x, y);
+    dot.setSize(size, size);
+    dot.body.setSize(size, size);
+    dot.setFillStyle(effect.color);
+    dot.damage = effect.damage;
+    dot.onHit = effect.onHit || null;
+    dot.travelAngle = angle;
+    dot.decel = effect.decel;
+    dot.currentSpeed = effect.speed * (effect.speedJitter ? 1 + Phaser.Math.FloatBetween(-effect.speedJitter, effect.speedJitter) : 1);
+    this.physics.velocityFromRotation(angle, dot.currentSpeed, dot.body.velocity);
+
+    if (dot.lifetimeTimer) dot.lifetimeTimer.remove();
+    dot.lifetimeTimer = this.time.delayedCall(effect.lifetimeMs, () => this.deactivate(dot));
   }
 
-  // 시작점~목표점을 LIGHTNING_SEGMENTS 구간으로 나누고, 각 중간점을 진행 방향의 수직으로 살짝 흔들어
-  // 대체로 목표를 향하는(유도) 선형이되 불규칙하게 꺾이는 경로를 만듦
-  buildLightningPath(x1, y1, x2, y2) {
-    const dx = x2 - x1;
-    const dy = y2 - y1;
-    const len = Math.hypot(dx, dy) || 1;
-    const nx = -dy / len;
-    const ny = dx / len;
-
-    const points = [[x1, y1]];
-    for (let i = 1; i < LIGHTNING_SEGMENTS; i++) {
-      const t = i / LIGHTNING_SEGMENTS;
-      const jitter = Phaser.Math.Between(-LIGHTNING_JITTER, LIGHTNING_JITTER);
-      points.push([x1 + dx * t + nx * jitter, y1 + dy * t + ny * jitter]);
-    }
-    points.push([x2, y2]);
-    return points;
-  }
-
-  drawLightningFx(points) {
-    const g = this.add.graphics().setBlendMode(Phaser.BlendModes.ADD);
-    g.lineStyle(6, LIGHTNING_COLOR, 0.35);
-    g.beginPath();
-    g.moveTo(points[0][0], points[0][1]);
-    for (let i = 1; i < points.length; i++) g.lineTo(points[i][0], points[i][1]);
-    g.strokePath();
-    g.lineStyle(2, LIGHTNING_COLOR, 0.9);
-    g.beginPath();
-    g.moveTo(points[0][0], points[0][1]);
-    for (let i = 1; i < points.length; i++) g.lineTo(points[i][0], points[i][1]);
-    g.strokePath();
-    this.time.delayedCall(120, () => g.destroy());
-
-    points.forEach(([px, py]) => this.lightningGlowEmitter.emitParticleAt(px, py, 1));
-  }
-
-  // 즉시 판정되는 직선 빔. 경로에 걸리는 몹 전부를 맞히고, 각 몹마다 독립적으로 onHit이 트리거됨.
-  fireLaserBeam(x, y, angle, effect) {
-    const endX = x + Math.cos(angle) * LASER_RANGE;
-    const endY = y + Math.sin(angle) * LASER_RANGE;
-    this.drawLaserFx(x, y, endX, endY);
-
-    this.mobs.children.iterate((mob) => {
-      if (!mob || !mob.active) return;
-      const dist = this.distanceToSegment(mob.x, mob.y, x, y, endX, endY);
-      if (dist <= LASER_HIT_WIDTH / 2 + mob.body.width / 2) {
-        this.applyHit(mob, effect, mob.x, mob.y, angle);
-      }
-    });
-  }
-
-  drawLaserFx(x1, y1, x2, y2) {
-    const g = this.add.graphics().setBlendMode(Phaser.BlendModes.ADD);
-    g.lineStyle(10, LASER_COLOR, 0.35);
-    g.lineBetween(x1, y1, x2, y2);
-    g.lineStyle(4, LASER_COLOR, 0.9);
-    g.lineBetween(x1, y1, x2, y2);
-    this.time.delayedCall(100, () => g.destroy());
-
-    const dist = Phaser.Math.Distance.Between(x1, y1, x2, y2);
-    const step = Math.max(1, Math.round(dist / 24));
-    for (let i = 0; i <= step; i++) {
-      const t = i / step;
-      this.laserGlowEmitter.emitParticleAt(Phaser.Math.Linear(x1, x2, t), Phaser.Math.Linear(y1, y2, t), 1);
-    }
-  }
-
-  distanceToSegment(px, py, x1, y1, x2, y2) {
-    const dx = x2 - x1;
-    const dy = y2 - y1;
-    const lengthSq = dx * dx + dy * dy;
-    const t = lengthSq === 0 ? 0 : Phaser.Math.Clamp(((px - x1) * dx + (py - y1) * dy) / lengthSq, 0, 1);
-    return Phaser.Math.Distance.Between(px, py, x1 + t * dx, y1 + t * dy);
-  }
-
-  // 프로젝타일/레이저 공통 적중 처리: 몹 하나 데미지 처리 + 그 자리에서 바로 자식 탄(onHit) 트리거.
-  // (메테오처럼 여러 몹을 한 번에 때리고 자식 탄은 폭발 지점 한 번만 트리거하고 싶으면 damageMob만 따로 써야 함 - explodeMeteor 참고)
-  applyHit(mob, effect, x, y, angle) {
-    this.damageMob(mob, effect.damage + (effect.burn ? 5 : 0), x, y, effect.freeze);
-    if (effect.onHit) {
-      this.launchEffects(x, y, angle, effect.onHit);
-    }
-  }
-
-  // 몹 하나에 데미지 적용 + 빙결 + 처치 판정만 함. 자식 탄(onHit) 트리거 여부/시점은 호출한 쪽 책임.
-  damageMob(mob, amount, x, y, freeze) {
-    if (!mob.active) return;
-    mob.hp -= amount;
-    this.maxHit = Math.max(this.maxHit, amount);
-    this.mobHitEmitter.explode(8, x, y);
-
-    if (freeze) {
-      mob.frozenUntil = this.time.now + FREEZE_DURATION_MS;
-      mob.setFillStyle(0x99e6ff);
-      mob.body.setVelocity(0, 0);
-    }
-
-    if (mob.hp <= 0) {
-      mob.type.onDeath(this, mob);
-      this.deactivate(mob);
-      this.score += mob.type.scoreValue();
-      this.kills += 1;
-      this.updateHud();
-    }
-  }
-
-  spawnProjectile(x, y, angle, effect) {
-    const radius = effect.projectileRadius ?? (effect.homing ? 7 : 5);
-    let proj = this.projectiles.getFirstDead(false);
-    if (!proj) {
-      proj = this.add.circle(0, 0, radius, BASE_PROJECTILE_COLOR);
-      this.physics.add.existing(proj);
-      this.projectiles.add(proj);
-    }
-    proj.setActive(true).setVisible(true);
-    proj.body.enable = true;
-    proj.setPosition(x, y);
-    proj.setRadius(radius);
-    proj.body.setCircle(radius);
-    proj.setFillStyle(projectileColor(effect));
-    proj.setStrokeStyle(effect.onHit ? 2 : 0, 0x000000);
-    proj.damage = effect.damage;
-    proj.burn = effect.burn;
-    proj.speed = effect.speed;
-    proj.homing = !!effect.homing;
-    proj.homingTarget = effect.homing ? this.findNearestMob() : null;
-    proj.homingTurnRate = effect.homingTurnRate;
-    proj.freeze = !!effect.freeze;
-    proj.onHit = effect.onHit || null;
-    proj.orbit = false;
-    proj.orbitLaunching = false;
-    proj.travelAngle = angle;
-    this.physics.velocityFromRotation(angle, effect.speed, proj.body.velocity);
-
-    if (proj.lifetimeTimer) proj.lifetimeTimer.remove();
-    proj.lifetimeTimer = this.time.delayedCall(effect.lifetimeMs ?? 2200, () => this.deactivate(proj));
-  }
-
-  // 원 궤도를 도는 투사체. 플레이어 위치에서 해당 각도로 직선 발사되다가(launching) 궤도 반지름에
-  // 도달하면 궤도 모드로 전환되어 그 뒤로는 플레이어 중심 각도만 진행시키며 위치를 재계산함
-  spawnOrbitProjectile(effect, orbitAngle) {
-    const radius = effect.projectileRadius ?? 5;
-    let proj = this.projectiles.getFirstDead(false);
-    if (!proj) {
-      proj = this.add.circle(0, 0, radius, BASE_PROJECTILE_COLOR);
-      this.physics.add.existing(proj);
-      this.projectiles.add(proj);
-    }
-    proj.setActive(true).setVisible(true);
-    proj.body.enable = true;
-    proj.setRadius(radius);
-    proj.body.setCircle(radius);
-    proj.setFillStyle(projectileColor(effect));
-    proj.setStrokeStyle(effect.onHit ? 2 : 0, 0x000000);
-    proj.damage = effect.damage;
-    proj.burn = effect.burn;
-    proj.homing = false;
-    proj.homingTarget = null;
-    proj.freeze = !!effect.freeze;
-    proj.onHit = effect.onHit || null;
-    proj.orbit = false;
-    proj.orbitLaunching = true;
-    proj.orbitAngle = orbitAngle;
-    proj.orbitRadius = ORBIT_RADIUS;
-    proj.orbitSpeed = Phaser.Math.DegToRad(effect.speed);
-    proj.travelAngle = orbitAngle;
-    proj.body.reset(this.player.x, this.player.y);
-    this.physics.velocityFromRotation(orbitAngle, ORBIT_LAUNCH_SPEED, proj.body.velocity);
-
-    // 오빗은 수명 없음 - 적중하기 전까진 계속 돎 (launchOrbitEffects가 개수 채워넣는 방식으로 관리)
-    if (proj.lifetimeTimer) {
-      proj.lifetimeTimer.remove();
-      proj.lifetimeTimer = null;
-    }
-  }
-
-  updateOrbitProjectiles(delta) {
-    this.projectiles.children.iterate((proj) => {
-      if (!proj || !proj.active || (!proj.orbit && !proj.orbitLaunching)) return;
-
-      if (proj.orbitLaunching) {
-        const dist = Phaser.Math.Distance.Between(this.player.x, this.player.y, proj.x, proj.y);
-        if (dist < proj.orbitRadius) return;
-        proj.orbitLaunching = false;
-        proj.orbit = true;
-        proj.orbitAngle = Phaser.Math.Angle.Between(this.player.x, this.player.y, proj.x, proj.y);
-        proj.body.setVelocity(0, 0);
-      }
-
-      proj.orbitAngle += proj.orbitSpeed * (delta / 1000);
-      proj.travelAngle = proj.orbitAngle;
-      const x = this.player.x + Math.cos(proj.orbitAngle) * proj.orbitRadius;
-      const y = this.player.y + Math.sin(proj.orbitAngle) * proj.orbitRadius;
-      proj.body.reset(x, y);
+  // decel이 있는 도트는 지수감쇠로 서서히 느려짐 (완전 정지는 아님) - lifetimeMs가 되면 자연스럽게 사라짐
+  updateProjectileDecel(delta) {
+    this.projectiles.children.iterate((dot) => {
+      if (!dot || !dot.active || !dot.decel) return;
+      dot.currentSpeed *= Math.exp(-dot.decel * (delta / 1000));
+      this.physics.velocityFromRotation(dot.travelAngle, dot.currentSpeed, dot.body.velocity);
     });
   }
 
@@ -719,9 +355,7 @@ export default class GameScene extends Phaser.Scene {
     mob.body.setSize(MobType.size, MobType.size);
     mob.setFillStyle(MobType.color);
     mob.hp = MobType.hp;
-    mob.frozenUntil = 0;
     mob.type = MobType;
-    mob.baseColor = MobType.color;
 
     const halfW = this.cameras.main.width / 2 + MOB_SPAWN_MARGIN;
     const halfH = this.cameras.main.height / 2 + MOB_SPAWN_MARGIN;
@@ -748,25 +382,48 @@ export default class GameScene extends Phaser.Scene {
   }
 
   updateMobBehavior(delta) {
-    const now = this.time.now;
     this.mobs.children.iterate((mob) => {
       if (!mob || !mob.active) return;
-      if (mob.frozenUntil && now < mob.frozenUntil) {
-        mob.body.setVelocity(0, 0);
-        return;
-      }
-      if (mob.frozenUntil) {
-        mob.frozenUntil = 0;
-        mob.setFillStyle(mob.baseColor);
-      }
       mob.type.behavior(this, mob, delta);
     });
   }
 
-  onProjectileHitMob(proj, mob) {
-    if (!proj.active || !mob.active) return;
-    this.applyHit(mob, proj, proj.x, proj.y, proj.travelAngle);
-    this.deactivate(proj);
+  onProjectileHitMob(dot, mob) {
+    if (!dot.active || !mob.active) return;
+    this.damageMob(mob, dot.damage, dot.x, dot.y);
+    if (dot.onHit) this.fireEffectAt(dot.x, dot.y, dot.travelAngle, dot.onHit);
+    this.deactivate(dot);
+  }
+
+  // onHit 자식 도트는 적중 지점에서 fireEffect와 동일한 방식(조준/부채꼴 또는 radial)으로 다시 뿌림.
+  fireEffectAt(x, y, baseAngle, effects) {
+    effects.forEach((effect) => {
+      const count = Math.max(1, Math.round(effect.quantity));
+      if (effect.radial) {
+        for (let i = 0; i < count; i++) this.spawnDot(x, y, (Math.PI * 2 * i) / count, effect);
+        return;
+      }
+      const spread = Phaser.Math.DegToRad(effect.spreadDeg);
+      for (let i = 0; i < count; i++) {
+        const angle = count === 1 ? baseAngle : baseAngle - spread / 2 + (spread * i) / (count - 1);
+        this.spawnDot(x, y, angle, effect);
+      }
+    });
+  }
+
+  damageMob(mob, amount, x, y) {
+    if (!mob.active) return;
+    mob.hp -= amount;
+    this.maxHit = Math.max(this.maxHit, amount);
+    this.mobHitEmitter.explode(6, x, y);
+
+    if (mob.hp <= 0) {
+      mob.type.onDeath(this, mob);
+      this.deactivate(mob);
+      this.score += mob.type.scoreValue();
+      this.kills += 1;
+      this.updateHud();
+    }
   }
 
   onMobHitPlayer(mob) {
